@@ -1,6 +1,6 @@
 {
-  "id": "fcb23dfc-62c5-4b88-85ab-c7608e79483a",
-  "prevId": "9844c30b-4c4a-4c04-9433-43f9c2642fa1",
+  "id": "9844c30b-4c4a-4c04-9433-43f9c2642fa1",
+  "prevId": "9024d5cb-f71e-4438-b157-52ceb9151e87",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3091,13 +3091,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "image_allowlist": {
-          "name": "image_allowlist",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "ARRAY[]::text[]"
         }
       },
       "indexes": {
