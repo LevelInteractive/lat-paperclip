@@ -42,6 +42,12 @@ export interface RefreshWorkerDeps {
  * `refreshConnection` itself opens a transaction; passing `tx` from the
  * outer transaction makes Drizzle nest it as a savepoint, so a per-row
  * failure rolls back only that row's work, not the whole tick.
+ *
+ * Connections with NULL `accessTokenExpiresAt` are intentionally excluded:
+ * they represent providers that did not return an expiry, so the worker has no
+ * safe proactive refresh threshold. Lazy runtime resolution also treats NULL as
+ * non-expiring. If a future provider supports refresh but omits `expires_in`,
+ * add a provider `refresh.expirySeconds` default before enabling worker refresh.
  */
 export async function runRefreshTick(deps: RefreshWorkerDeps): Promise<void> {
   await deps.db.transaction(async (tx: any) => {

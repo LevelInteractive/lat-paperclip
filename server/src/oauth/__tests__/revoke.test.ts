@@ -9,6 +9,8 @@ interface RevokeFixture {
   readonly lastUrl: string;
   readonly lastBody: string;
   readonly lastAuth: string;
+  readonly lastMethod: string;
+  readonly lastContentType: string;
   readonly hits: number;
   setStatus: (status: number) => void;
 }
@@ -17,6 +19,7 @@ function makeProvider(
   revokeEndpoint: string | undefined,
   clientId = "the-client",
   clientSecret = "the-secret",
+  revokeMethod?: "post-form" | "delete-json",
 ): RegisteredProvider {
   return {
     config: {
@@ -35,6 +38,7 @@ function makeProvider(
       responseFormat: "json",
       accountIdField: "id",
       accountLabelField: "login",
+      ...(revokeMethod ? { revokeMethod } : {}),
       refresh: { supported: false },
     },
     clientId,
@@ -53,12 +57,16 @@ describe("revokeUpstreamToken", () => {
     let lastUrl = "";
     let lastBody = "";
     let lastAuth = "";
+    let lastMethod = "";
+    let lastContentType = "";
     let hits = 0;
     let status = 200;
     const s = http.createServer((req, res) => {
       hits++;
       lastUrl = String(req.url ?? "");
+      lastMethod = String(req.method ?? "");
       lastAuth = String(req.headers.authorization ?? "");
+      lastContentType = String(req.headers["content-type"] ?? "");
       const chunks: Buffer[] = [];
       req.on("data", (c) => chunks.push(c));
       req.on("end", () => {
@@ -76,6 +84,8 @@ describe("revokeUpstreamToken", () => {
       get lastUrl() { return lastUrl; },
       get lastBody() { return lastBody; },
       get lastAuth() { return lastAuth; },
+      get lastMethod() { return lastMethod; },
+      get lastContentType() { return lastContentType; },
       get hits() { return hits; },
       setStatus: (s) => { status = s; },
     };
@@ -112,6 +122,7 @@ describe("revokeUpstreamToken", () => {
     expect(fixture.lastBody).toContain("token=RT");
     expect(fixture.lastBody).toContain("token_type_hint=refresh_token");
     expect(fixture.lastBody).not.toContain("token=AT");
+    expect(fixture.lastMethod).toBe("POST");
     const expected = `Basic ${Buffer.from("the-client:the-secret").toString("base64")}`;
     expect(fixture.lastAuth).toBe(expected);
   });
@@ -121,6 +132,20 @@ describe("revokeUpstreamToken", () => {
     await revokeUpstreamToken({ provider, accessToken: "AT" });
     expect(fixture.lastBody).toContain("token=AT");
     expect(fixture.lastBody).toContain("token_type_hint=access_token");
+  });
+
+  it("supports GitHub-style DELETE JSON revocation", async () => {
+    const provider = makeProvider(
+      `${fixture.base}/applications/{client_id}/grant`,
+      "abc-client",
+      "the-secret",
+      "delete-json",
+    );
+    await revokeUpstreamToken({ provider, accessToken: "AT" });
+    expect(fixture.lastMethod).toBe("DELETE");
+    expect(fixture.lastContentType).toContain("application/json");
+    expect(JSON.parse(fixture.lastBody)).toEqual({ access_token: "AT" });
+    expect(fixture.lastUrl).toBe("/applications/abc-client/grant");
   });
 
   it("throws on a non-2xx upstream response", async () => {

@@ -36,6 +36,7 @@ export const OAuthProviderConfigSchema = z.object({
   responseFormat: z.enum(["json", "form"]),
   accountIdField: z.string().min(1),
   accountLabelField: z.string().min(1),
+  revokeMethod: z.enum(["post-form", "delete-json"]).optional(),
 
   refresh: z.discriminatedUnion("supported", [
     z.object({ supported: z.literal(false) }),

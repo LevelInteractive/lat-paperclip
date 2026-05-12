@@ -226,38 +226,13 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
       );
     }
 
-    // Persist secrets via upsert (deterministic name → idempotent reconnects).
-    const accessName = secretName(providerId, parsedAccount.accountId, "access");
-    const accessSecret = await deps.secretService.upsertSecretByName(
-      stateRow.companyId,
-      { name: accessName, value: parsedToken.accessToken },
-    );
-    let refreshSecret: { id: string } | undefined;
-    if (parsedToken.refreshToken) {
-      const refreshName = secretName(
-        providerId,
-        parsedAccount.accountId,
-        "refresh",
-      );
-      refreshSecret = await deps.secretService.upsertSecretByName(
-        stateRow.companyId,
-        { name: refreshName, value: parsedToken.refreshToken },
-      );
-    }
-
-    const expiresAt = parsedToken.expiresInSeconds
-      ? new Date(Date.now() + parsedToken.expiresInSeconds * 1000)
-      : null;
-    const finalScopes = parsedToken.scope ?? stateRow.scopesRequested ?? [];
-
-    // Track the secret IDs we just wrote. The connection upsert runs in its own
+    // Track the secret IDs we write. The connection upsert runs in its own
     // transaction below, but these secret writes are outside that transaction,
     // so a failed connection write cannot roll them back automatically. Only
     // remove IDs that did not already back the pre-existing connection; on a
     // reconnect, upsertSecretByName rotates the same secret ID in place and
     // deleting it would break the still-current connection.
-    const newSecretIds: string[] = [accessSecret.id];
-    if (refreshSecret) newSecretIds.push(refreshSecret.id);
+    const newSecretIds: string[] = [];
     const reusableSecretIds = new Set(
       [
         existingBeforeSecretWrite?.accessTokenSecretId,
@@ -282,6 +257,50 @@ export function oauthCallbackRoute(deps: OAuthCallbackDeps): RequestHandler {
         });
       }
     };
+
+    // Persist secrets via upsert (deterministic name → idempotent reconnects).
+    let accessSecret: { id: string };
+    let refreshSecret: { id: string } | undefined;
+    try {
+      const accessName = secretName(providerId, parsedAccount.accountId, "access");
+      accessSecret = await deps.secretService.upsertSecretByName(
+        stateRow.companyId,
+        { name: accessName, value: parsedToken.accessToken },
+      );
+      newSecretIds.push(accessSecret.id);
+      if (parsedToken.refreshToken) {
+        const refreshName = secretName(
+          providerId,
+          parsedAccount.accountId,
+          "refresh",
+        );
+        refreshSecret = await deps.secretService.upsertSecretByName(
+          stateRow.companyId,
+          { name: refreshName, value: parsedToken.refreshToken },
+        );
+        newSecretIds.push(refreshSecret.id);
+      }
+    } catch (err) {
+      await rollbackNewSecrets("secret_persistence_failed");
+      oauthLogger.error(
+        {
+          provider: providerId,
+          err: { message: (err as Error).message },
+        },
+        "failed to persist OAuth token secrets during callback",
+      );
+      return res.redirect(
+        302,
+        back(deps, stateRow.returnUrl, {
+          oauth_error: "token_persistence_failed",
+        }),
+      );
+    }
+
+    const expiresAt = parsedToken.expiresInSeconds
+      ? new Date(Date.now() + parsedToken.expiresInSeconds * 1000)
+      : null;
+    const finalScopes = parsedToken.scope ?? stateRow.scopesRequested ?? [];
 
     try {
       await deps.db.transaction(async (tx: any) => {

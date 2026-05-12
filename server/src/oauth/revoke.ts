@@ -15,9 +15,9 @@ export interface RevokeUpstreamInput {
  * - No-op if neither token is provided.
  * - Prefers revoking the refresh token (which implicitly revokes derived
  *   access tokens too, per RFC 7009 §2.1).
- * - Substitutes `{client_id}` placeholder in the URL — required for providers
- *   like GitHub that scope revocation under
- *   `https://api.github.com/applications/{client_id}/grant`.
+ * - Substitutes `{client_id}` placeholder in the URL.
+ * - Supports the default RFC 7009 form POST plus GitHub-style DELETE + JSON
+ *   revocation for providers that set `revokeMethod: delete-json`.
  *
  * Throws on non-2xx upstream responses; callers (e.g. the disconnect route)
  * should catch and log so local cleanup proceeds either way.
@@ -30,6 +30,28 @@ export async function revokeUpstreamToken(
   if (!input.accessToken && !input.refreshToken) return;
 
   const url = revokeUrl.replace("{client_id}", input.provider.clientId);
+  const revokeMethod = input.provider.config.revokeMethod ?? "post-form";
+
+  if (revokeMethod === "delete-json") {
+    const token = input.accessToken ?? input.refreshToken;
+    if (!token) return;
+    const credentials = Buffer.from(
+      `${input.provider.clientId}:${input.provider.clientSecret}`,
+    ).toString("base64");
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Basic ${credentials}`,
+      },
+      body: JSON.stringify({ access_token: token }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new Error(`upstream revoke failed: ${res.status}`);
+    }
+    return;
+  }
 
   const body = new URLSearchParams();
   if (input.refreshToken) {

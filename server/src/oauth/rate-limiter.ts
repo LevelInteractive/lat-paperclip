@@ -15,6 +15,7 @@ export function createSlidingWindowLimiter(opts: SlidingWindowLimiterOptions): S
       const cutoff = now - opts.windowMs;
       const bucket = buckets.get(key) ?? [];
       while (bucket.length > 0 && bucket[0] <= cutoff) bucket.shift();
+      if (bucket.length === 0) buckets.delete(key);
       if (bucket.length >= opts.limit) {
         buckets.set(key, bucket);
         return false;
