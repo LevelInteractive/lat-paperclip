@@ -128,7 +128,8 @@ export const IssueLinkQuicklook = React.forwardRef<
         onFocus?.(event);
       }}
       onBlur={(event) => {
-        setOpen(false);
+        // Let clicks inside the portaled quicklook content finish before closing.
+        setTimeout(() => setOpen(false), 0);
         onBlur?.(event);
       }}
       onTouchStart={(event) => {
