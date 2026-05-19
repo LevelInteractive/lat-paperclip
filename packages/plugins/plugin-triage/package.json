@@ -6,6 +6,7 @@
   "description": "Queue workbench for triaging arbitrary items with a teachable assistant.",
   "files": [
     "dist",
+    "migrations",
     "README.md"
   ],
   "scripts": {

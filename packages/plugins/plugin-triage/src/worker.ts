@@ -2,6 +2,8 @@ import {
   definePlugin,
   runWorker,
   type PluginContext,
+  type PluginApiRequestInput,
+  type PaperclipPlugin,
   type PluginManagedAgentResolution,
   type PluginManagedProjectResolution,
   type PluginManagedSkillResolution,
@@ -11,6 +13,12 @@ import {
   TRIAGE_MANAGED_SKILL_KEYS,
   TRIAGE_PROJECT_KEY,
 } from "./manifest.js";
+import {
+  createPostgresTriageStore,
+  createTriageService,
+  formatTriageError,
+  type TriageStore,
+} from "./triage.js";
 
 type ManagedResourceHealth = {
   status: "needs_company" | "missing" | "ready";
@@ -55,6 +63,13 @@ function requireCompanyId(params: Record<string, unknown>): string {
     throw new Error("companyId is required");
   }
   return companyId;
+}
+
+async function requireKnownCompany(ctx: PluginContext, companyId: string): Promise<void> {
+  const company = await ctx.companies.get(companyId);
+  if (!company) {
+    throw new Error(`Company not found: ${companyId}`);
+  }
 }
 
 function summarizeAgent(resolution: PluginManagedAgentResolution): ManagedAgentHealth {
@@ -125,8 +140,70 @@ async function managedResourceHealth(
   };
 }
 
-const plugin = definePlugin({
+export function createTriagePlugin(options: {
+  createStore?: (ctx: PluginContext) => TriageStore;
+} = {}): PaperclipPlugin {
+  const createStore = options.createStore ?? createPostgresTriageStore;
+  let service: ReturnType<typeof createTriageService> | null = null;
+  let activeCtx: PluginContext | null = null;
+
+  function getService() {
+    if (!service) throw new Error("Paperclip Triage service is not ready");
+    return service;
+  }
+
+  async function handleApiRequest(input: PluginApiRequestInput) {
+    if (input.routeKey !== "items.ingest") {
+      return {
+        status: 404,
+        body: { error: { code: "unknown_route", message: `Unknown triage route: ${input.routeKey}` } },
+      };
+    }
+
+    const body = input.body && typeof input.body === "object" && !Array.isArray(input.body)
+      ? input.body as Record<string, unknown>
+      : {};
+    const bodyCompanyId = stringField(body.companyId);
+    if (bodyCompanyId && bodyCompanyId !== input.companyId) {
+      return {
+        status: 403,
+        body: {
+          error: {
+            code: "company_scope_mismatch",
+            message: "Request companyId does not match the resolved plugin route company",
+          },
+        },
+      };
+    }
+
+    try {
+      if (activeCtx) await requireKnownCompany(activeCtx, input.companyId);
+      const result = await getService().ingestItem(
+        {
+          ...body,
+          companyId: input.companyId,
+          queueKey: input.params.queueKey,
+        },
+        {
+          actorType: input.actor.actorType,
+          actorId: input.actor.actorId,
+          actorRunId: input.actor.runId ?? null,
+        },
+      );
+      return {
+        status: result.createdItem ? 201 : 200,
+        body: result,
+      };
+    } catch (error) {
+      return formatTriageError(error);
+    }
+  }
+
+  return definePlugin({
   async setup(ctx) {
+    activeCtx = ctx;
+    service = createTriageService(createStore(ctx));
+
     ctx.data.register("managed-resource-health", async (params: Record<string, unknown>) => {
       const companyId = stringField(params.companyId);
       if (!companyId) {
@@ -142,6 +219,22 @@ const plugin = definePlugin({
       return managedResourceHealth(ctx, companyId, "inspect");
     });
 
+    ctx.data.register("queues", async (params: Record<string, unknown>) => {
+      return getService().listQueues(params);
+    });
+
+    ctx.data.register("queue", async (params: Record<string, unknown>) => {
+      return getService().getQueue(params);
+    });
+
+    ctx.data.register("queue-items", async (params: Record<string, unknown>) => {
+      return getService().listItems(params);
+    });
+
+    ctx.data.register("queue-item", async (params: Record<string, unknown>) => {
+      return getService().getItem(params);
+    });
+
     ctx.actions.register("reconcile-managed-resources", async (params: Record<string, unknown>) => {
       const companyId = requireCompanyId(params);
       const result = await managedResourceHealth(ctx, companyId, "reconcile");
@@ -153,12 +246,53 @@ const plugin = definePlugin({
       });
       return result;
     });
+
+    ctx.actions.register("create-queue", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().createQueue(params);
+    });
+
+    ctx.actions.register("update-queue", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().updateQueue(params);
+    });
+
+    ctx.actions.register("archive-queue", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().archiveQueue(params);
+    });
+
+    ctx.actions.register("ingest-item", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().ingestItem(params, { actorType: "plugin-action", actorId: ctx.manifest.id });
+    });
+
+    ctx.actions.register("create-or-update-item", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().ingestItem(params, { actorType: "plugin-action", actorId: ctx.manifest.id });
+    });
+
+    ctx.actions.register("update-item", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().updateItem(params);
+    });
+
+    ctx.actions.register("archive-item", async (params: Record<string, unknown>) => {
+      await requireKnownCompany(ctx, requireCompanyId(params));
+      return getService().archiveItem(params);
+    });
+  },
+
+  async onApiRequest(input: PluginApiRequestInput) {
+    return handleApiRequest(input);
   },
 
   async onHealth() {
     return { status: "ok", message: "Paperclip Triage worker is running" };
   },
-});
+  });
+}
 
+const plugin = createTriagePlugin();
 export default plugin;
 runWorker(plugin, import.meta.url);

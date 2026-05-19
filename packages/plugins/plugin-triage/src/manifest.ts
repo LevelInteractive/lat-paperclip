@@ -64,6 +64,11 @@ const manifest: PaperclipPluginManifestV1 = {
   author: "Paperclip",
   categories: ["automation", "ui"],
   capabilities: [
+    "api.routes.register",
+    "database.namespace.migrate",
+    "database.namespace.read",
+    "database.namespace.write",
+    "companies.read",
     "agents.managed",
     "projects.managed",
     "skills.managed",
@@ -75,6 +80,21 @@ const manifest: PaperclipPluginManifestV1 = {
     worker: "./dist/worker.js",
     ui: "./dist/ui",
   },
+  database: {
+    namespaceSlug: "triage",
+    migrationsDir: "migrations",
+    coreReadTables: ["companies", "issues"],
+  },
+  apiRoutes: [
+    {
+      routeKey: "items.ingest",
+      method: "POST",
+      path: "/queues/:queueKey/items",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" },
+    },
+  ],
   agents: [
     {
       agentKey: TRIAGE_ASSISTANT_AGENT_KEY,
