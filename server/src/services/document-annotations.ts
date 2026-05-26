@@ -333,30 +333,6 @@ export function documentAnnotationService(db: Db) {
       return updated;
     }),
 
-    listOpenContextForIssue: async (issueId: string, limit = 20) => {
-      const threads: DocumentAnnotationThread[] = await db
-        .select(threadSelect)
-        .from(documentAnnotationThreads)
-        .where(and(eq(documentAnnotationThreads.issueId, issueId), eq(documentAnnotationThreads.status, "open")))
-        .orderBy(desc(documentAnnotationThreads.updatedAt), desc(documentAnnotationThreads.id))
-        .limit(limit);
-      const comments = await commentsForThreads(threads.map((thread) => thread.id));
-      const latestCommentByThread = new Map<string, DocumentAnnotationComment>();
-      for (const comment of comments) latestCommentByThread.set(comment.threadId, comment);
-      return threads.map((thread) => ({
-        id: thread.id,
-        documentKey: thread.documentKey,
-        status: thread.status,
-        anchorState: thread.anchorState,
-        anchorConfidence: thread.anchorConfidence,
-        currentRevisionNumber: thread.currentRevisionNumber,
-        selectedText: thread.selectedText,
-        prefixText: thread.prefixText,
-        suffixText: thread.suffixText,
-        latestComment: latestCommentByThread.get(thread.id) ?? null,
-      }));
-    },
-
     remapOpenThreadsForDocument: async (input: {
       issueId: string;
       key: string;

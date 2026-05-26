@@ -2919,6 +2919,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
           isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
         ),
       );
     const result = {
