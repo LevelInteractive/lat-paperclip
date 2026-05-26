@@ -139,6 +139,20 @@ describe.sequential("plugin install and upgrade authz", () => {
     vi.clearAllMocks();
   });
 
+  it("lists bundled monorepo plugin packages", async () => {
+    const { app } = await createApp(boardActor());
+
+    const res = await request(app).get("/api/plugins/examples");
+
+    expect(res.status).toBe(200);
+    const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
+    expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
+    expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
+    expect(packageNames).toContain("@paperclipai/plugin-modal");
+    expect(packageNames).toContain("@paperclipai/plugin-authoring-smoke-example");
+    expect(packageNames).not.toContain("@paperclipai/plugin-sdk");
+  }, 20_000);
+
   it("rejects plugin installation for non-admin board users", async () => {
     const { app, loader } = await createApp({
       type: "board",

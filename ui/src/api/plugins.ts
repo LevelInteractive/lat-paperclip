@@ -132,7 +132,7 @@ export interface PluginDashboardData {
   checkedAt: string;
 }
 
-export interface AvailablePluginExample {
+export interface AvailableBundledPlugin {
   packageName: string;
   pluginKey: string;
   displayName: string;
@@ -215,10 +215,10 @@ export const pluginsApi = {
     api.get<PluginRecord[]>(`/plugins${status ? `?status=${status}` : ""}`),
 
   /**
-   * List bundled example plugins available from the current repo checkout.
+   * List bundled plugin packages available from the current repo checkout.
    */
-  listExamples: () =>
-    api.get<AvailablePluginExample[]>("/plugins/examples"),
+  listBundled: () =>
+    api.get<AvailableBundledPlugin[]>("/plugins/examples"),
 
   /**
    * Fetch a single plugin record by its UUID or plugin key.
