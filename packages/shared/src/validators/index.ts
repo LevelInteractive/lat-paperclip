@@ -124,6 +124,16 @@ export {
 } from "./company-portability.js";
 
 export {
+  trustPresetSchema,
+  lowTrustBoundarySchema,
+  lowTrustReviewPresetPolicySchema,
+  trustAuthorizationPolicySchema,
+  type TrustPresetInput,
+  type LowTrustBoundaryInput,
+  type TrustAuthorizationPolicyInput,
+} from "./trust-policy.js";
+
+export {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,

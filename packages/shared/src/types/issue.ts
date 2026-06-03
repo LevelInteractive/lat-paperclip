@@ -30,6 +30,10 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+import type {
+  LowTrustReviewPresetPolicy,
+  TrustAuthorizationPolicy,
+} from "../trust-policy.js";
 
 export type { IssueWorkMode };
 
@@ -441,6 +445,8 @@ export interface IssueExecutionPolicy {
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
+  reviewPreset?: LowTrustReviewPresetPolicy;
+  authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
 export interface IssueExecutionMonitorState {
