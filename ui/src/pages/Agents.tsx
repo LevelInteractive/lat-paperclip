@@ -9,6 +9,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
+import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 import { EntityRow } from "../components/EntityRow";
@@ -287,6 +288,21 @@ export function Agents() {
                       <span className="w-20 flex justify-end">
                         <StatusBadge status={agent.status} />
                       </span>
+                    </div>
+                    {/* Row actions mirror the agent detail page; stop the click
+                        from bubbling to the row link so buttons don't navigate. */}
+                    <div
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    >
+                      <AgentActionButtons
+                        agent={agent}
+                        companyId={selectedCompanyId}
+                        runLabel="Run Heartbeat"
+                        showStatus={false}
+                      />
                     </div>
                     <MembershipAction
                       state={resourceMembershipState(membershipsQuery.data, "agent", agent.id)}

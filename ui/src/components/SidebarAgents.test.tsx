@@ -186,8 +186,17 @@ async function chooseSortMode(label: string) {
 
 function agentLinkLabels(container: HTMLElement) {
   return Array.from(container.querySelectorAll('a[href^="/agents/"]'))
+    .filter((anchor) => anchor.getAttribute("href") !== "/agents/all")
     .map((anchor) => anchor.textContent?.trim())
     .filter(Boolean);
+}
+
+function seeAllAgentsLink(container: HTMLElement) {
+  return (
+    Array.from(container.querySelectorAll('a[href="/agents/all"]')).find((anchor) =>
+      anchor.textContent?.includes("See all agents"),
+    ) ?? null
+  );
 }
 
 describe("SidebarAgents", () => {
@@ -465,6 +474,42 @@ describe("SidebarAgents", () => {
       .find((element) => element.textContent?.includes("Pause agent"));
     expect(betaPauseItem).toBeTruthy();
     expect(document.body.textContent).not.toContain("Updating...");
+  });
+
+  it("shows only active agents when any agent has a live run", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+      makeAgent({ id: "agent-c", name: "Charlie", urlKey: "charlie" }),
+    ]);
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([
+      { id: "run-1", agentId: "agent-b", status: "running" },
+    ]);
+
+    await renderSidebarAgents();
+
+    const labels = agentLinkLabels(container);
+    expect(labels).toHaveLength(1);
+    expect(labels[0]).toContain("Bravo");
+    expect(seeAllAgentsLink(container)).toBeNull();
+  });
+
+  it("shows up to 5 recently-active agents plus a See all link when none are running", async () => {
+    mockAgentsApi.list.mockResolvedValue(
+      Array.from({ length: 7 }, (_, index) =>
+        makeAgent({
+          id: `agent-${index}`,
+          name: `Agent ${index}`,
+          urlKey: `agent-${index}`,
+        }),
+      ),
+    );
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+
+    await renderSidebarAgents();
+
+    expect(agentLinkLabels(container)).toHaveLength(5);
+    expect(seeAllAgentsLink(container)?.getAttribute("href")).toBe("/agents/all");
   });
 
   it("does not offer sidebar resume for budget-paused agents", async () => {
