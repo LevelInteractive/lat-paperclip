@@ -1,15 +1,15 @@
-import { Folder } from "lucide-react";
 import { cn } from "../lib/utils";
+import { getProjectIcon } from "../lib/project-icons";
 
 /**
- * Reusable project tile (IA Phase 3 — PAP-58).
+ * Reusable project tile (IA Phase 3 — PAP-58; icon picker added PAP-68 part 3).
  *
  * Default render is a neutral gray rounded rectangle with a folder icon.
- * An optional `color` tints the background; the folder icon is fixed for all
- * tiles this phase (custom-icon picker is deferred to a later phase).
+ * An optional `color` tints the background; an optional `icon` selects which
+ * Lucide glyph to render (defaults to `folder`).
  *
- * Used by the Projects list rows and the project detail header. The color
- * lives on the project itself (`project.color`) — no new `project.icon` field.
+ * Used by the Projects list rows and the project detail header. Both `color`
+ * and `icon` live on the project itself (`project.color` / `project.icon`).
  */
 
 export type ProjectTileSize = "xs" | "sm" | "md" | "lg";
@@ -24,13 +24,16 @@ const SIZE_STYLES: Record<ProjectTileSize, { box: string; icon: string }> = {
 export interface ProjectTileProps {
   /** Optional project color. When unset, the tile stays neutral gray. */
   color?: string | null;
+  /** Optional Lucide icon name. When unset, defaults to `folder`. */
+  icon?: string | null;
   size?: ProjectTileSize;
   className?: string;
 }
 
-export function ProjectTile({ color, size = "md", className }: ProjectTileProps) {
+export function ProjectTile({ color, icon, size = "md", className }: ProjectTileProps) {
   const dims = SIZE_STYLES[size];
   const tinted = Boolean(color);
+  const Icon = getProjectIcon(icon);
 
   return (
     <span
@@ -43,7 +46,7 @@ export function ProjectTile({ color, size = "md", className }: ProjectTileProps)
       )}
       style={tinted ? { backgroundColor: color ?? undefined } : undefined}
     >
-      <Folder className={dims.icon} />
+      <Icon className={dims.icon} />
     </span>
   );
 }

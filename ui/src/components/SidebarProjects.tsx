@@ -140,7 +140,7 @@ function ProjectItem({
               : "text-foreground/80 hover:bg-accent/50 hover:text-foreground",
           )}
         >
-          <ProjectTile color={project.color ?? null} size="xs" />
+          <ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="xs" />
           <span className="flex-1 truncate">{project.name}</span>
           {project.pauseReason === "budget" ? <BudgetSidebarMarker title="Project paused by budget" /> : null}
         </NavLink>

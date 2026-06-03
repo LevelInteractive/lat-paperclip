@@ -207,7 +207,7 @@ export function Projects() {
                     return (
                       <EntityRow
                         key={project.id}
-                        leading={<ProjectTile color={project.color ?? null} size="sm" />}
+                        leading={<ProjectTile color={project.color ?? null} icon={project.icon ?? null} size="sm" />}
                         title={project.name}
                         subtitle={project.description ?? undefined}
                         reserveSubtitleSpace

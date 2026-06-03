@@ -108,9 +108,11 @@ function OverviewContent({
 
 function ColorPicker({
   color,
+  icon,
   onSelect,
 }: {
   color: string | null;
+  icon?: string | null;
   onSelect: (color: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -135,7 +137,7 @@ function ColorPicker({
         className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
         aria-label="Change project color"
       >
-        <ProjectTile color={color} size="md" />
+        <ProjectTile color={color} icon={icon ?? null} size="md" />
       </button>
       {open && (
         <div className="absolute top-full left-0 mt-2 p-3 bg-popover border border-border rounded-lg shadow-lg z-50 w-max">
@@ -722,6 +724,7 @@ export function ProjectDetail() {
         <div className="h-7 flex items-center">
           <ColorPicker
             color={project.color ?? null}
+            icon={project.icon ?? null}
             onSelect={(color) => updateProject.mutate({ color })}
           />
         </div>

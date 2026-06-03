@@ -9,7 +9,18 @@ describe("ProjectTile", () => {
     expect(markup).toContain("bg-muted");
     expect(markup).toContain("text-muted-foreground");
     expect(markup).not.toContain("background-color");
-    // Folder icon is always present (fixed for this phase).
+    // Folder icon is the default when no icon prop is supplied.
+    expect(markup).toContain("lucide-folder");
+  });
+
+  it("renders the chosen Lucide icon when an icon prop is provided", () => {
+    const markup = renderToStaticMarkup(<ProjectTile icon="rocket" />);
+    expect(markup).toContain("lucide-rocket");
+    expect(markup).not.toContain("lucide-folder");
+  });
+
+  it("falls back to the folder icon for an unknown icon name", () => {
+    const markup = renderToStaticMarkup(<ProjectTile icon="not-a-real-icon" />);
     expect(markup).toContain("lucide-folder");
   });
 
