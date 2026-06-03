@@ -12,6 +12,10 @@ export {
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
   type TrustAuthorizationPolicy,
+  type SourceTrustArtifactKind,
+  type SourceTrustDisposition,
+  type SourceTrustPromotionSource,
+  type SourceTrustMetadata,
 } from "./trust-policy.js";
 export {
   COMPANY_STATUSES,

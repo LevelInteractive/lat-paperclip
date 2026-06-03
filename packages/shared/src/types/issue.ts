@@ -32,6 +32,7 @@ import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./work
 import type { IssueWorkProduct } from "./work-product.js";
 import type {
   LowTrustReviewPresetPolicy,
+  SourceTrustMetadata,
   TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 
@@ -103,6 +104,7 @@ export interface IssueDocumentSummary {
   lockedAt: Date | null;
   lockedByAgentId: string | null;
   lockedByUserId: string | null;
+  sourceTrust: SourceTrustMetadata | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -543,6 +545,7 @@ export interface Issue {
   completedAt: Date | null;
   cancelledAt: Date | null;
   hiddenAt: Date | null;
+  sourceTrust?: SourceTrustMetadata | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];
@@ -585,6 +588,7 @@ export interface IssueComment {
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  sourceTrust: SourceTrustMetadata | null;
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;

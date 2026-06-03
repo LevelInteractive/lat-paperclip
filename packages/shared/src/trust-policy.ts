@@ -43,3 +43,25 @@ export interface TrustAuthorizationPolicy extends Record<string, unknown> {
   reviewPreset?: LowTrustReviewPresetPolicy;
   trustBoundary?: LowTrustBoundary;
 }
+
+export type SourceTrustArtifactKind = "issue" | "comment" | "document" | "work_product";
+
+export type SourceTrustDisposition = "quarantined" | "promoted";
+
+export interface SourceTrustPromotionSource {
+  artifactKind: SourceTrustArtifactKind;
+  artifactId: string;
+  issueId?: string | null;
+}
+
+export interface SourceTrustMetadata {
+  preset: TrustPreset;
+  disposition: SourceTrustDisposition;
+  sourceIssueId?: string | null;
+  sourceRunId?: string | null;
+  sourceAgentId?: string | null;
+  promotedFrom?: SourceTrustPromotionSource | null;
+  promotedByActorType?: "agent" | "user" | "system" | null;
+  promotedByActorId?: string | null;
+  promotedAt?: string | null;
+}

@@ -37,6 +37,25 @@ export const trustAuthorizationPolicySchema = z.object({
   trustBoundary: lowTrustBoundarySchema.optional(),
 }).catchall(z.unknown());
 
+export const sourceTrustArtifactKindSchema = z.enum(["issue", "comment", "document", "work_product"]);
+
+export const sourceTrustMetadataSchema = z.object({
+  preset: trustPresetSchema,
+  disposition: z.enum(["quarantined", "promoted"]),
+  sourceIssueId: z.string().uuid().nullable().optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  sourceAgentId: z.string().uuid().nullable().optional(),
+  promotedFrom: z.object({
+    artifactKind: sourceTrustArtifactKindSchema,
+    artifactId: z.string().uuid(),
+    issueId: z.string().uuid().nullable().optional(),
+  }).strict().nullable().optional(),
+  promotedByActorType: z.enum(["agent", "user", "system"]).nullable().optional(),
+  promotedByActorId: z.string().trim().min(1).nullable().optional(),
+  promotedAt: z.string().datetime({ offset: true }).nullable().optional(),
+}).strict();
+
 export type TrustPresetInput = z.infer<typeof trustPresetSchema>;
 export type LowTrustBoundaryInput = z.infer<typeof lowTrustBoundarySchema>;
 export type TrustAuthorizationPolicyInput = z.infer<typeof trustAuthorizationPolicySchema>;
+export type SourceTrustMetadataInput = z.infer<typeof sourceTrustMetadataSchema>;

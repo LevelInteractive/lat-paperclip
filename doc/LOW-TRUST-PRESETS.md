@@ -36,3 +36,20 @@ actors can inspect company work objects unless a separate access-control feature
 changes that behavior. Low-trust containment instead limits what the low-trust
 agent can read or mutate through the Paperclip API and prevents raw untrusted
 output from being automatically promoted into higher-trust agent context.
+
+## Runtime Containment
+
+Managed `low_trust_review` runs fail closed unless Paperclip can enforce the
+runtime boundary:
+
+- the selected execution environment must use the `sandbox` driver
+- the effective execution workspace mode must be `isolated_workspace`
+- the issue being run must be inside the resolved low-trust boundary
+- secret references must use binding ids explicitly allowed by the boundary
+- inline sensitive environment values such as API keys and tokens are rejected
+- workspace runtime-service mutations are denied unless the boundary explicitly
+  grants the `runtime.manage` tool class
+
+The Docker workflow in `doc/UNTRUSTED-PR-REVIEW.md` remains useful for manual
+local review, but Paperclip-managed low-trust execution requires a sandboxed
+environment instead of a host-local adapter process.
