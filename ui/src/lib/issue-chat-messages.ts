@@ -408,6 +408,7 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    sourceTrust: comment.sourceTrust ?? null,
   };
 
   if (isSystemNotice) {

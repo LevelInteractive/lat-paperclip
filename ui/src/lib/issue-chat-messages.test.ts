@@ -53,6 +53,7 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     authorType: authorAgentId ? "agent" : "user",
     presentation: null,
     metadata: null,
+    sourceTrust: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
@@ -321,6 +322,32 @@ describe("buildIssueChatMessages", () => {
           authorUserId: "user-1",
         },
       },
+    });
+  });
+
+  it("preserves low-trust source metadata on comment messages", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          sourceTrust: {
+            preset: "low_trust_review",
+            disposition: "quarantined",
+            sourceAgentId: "agent-1",
+          },
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map([["agent-1", createAgent("agent-1", "Low Trust Reviewer")]]),
+    });
+
+    expect(messages[0]?.metadata.custom.sourceTrust).toMatchObject({
+      preset: "low_trust_review",
+      disposition: "quarantined",
+      sourceAgentId: "agent-1",
     });
   });
 
