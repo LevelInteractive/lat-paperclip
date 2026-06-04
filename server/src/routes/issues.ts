@@ -1028,7 +1028,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     companyId: string,
-    issue?: { companyId: string; executionPolicy?: unknown } | null,
+    issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
   ) {
     if (!(await actorIsLowTrustReview(req, companyId, issue))) return false;
     res.status(403).json({ error: "Low-trust actors cannot use this control-plane surface" });
