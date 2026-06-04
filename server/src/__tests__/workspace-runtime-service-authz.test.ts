@@ -6,6 +6,7 @@ import {
   companies,
   createDb,
   executionWorkspaces,
+  heartbeatRuns,
   issues,
   projectWorkspaces,
   projects,
@@ -43,6 +44,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -228,6 +230,59 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
         type: "agent",
         agentId: ceoAgentId,
         companyId,
+        source: "agent_key",
+      },
+    } as any, {
+      companyId,
+      projectWorkspaceId,
+    })).rejects.toMatchObject({
+      status: 403,
+      message: "Low-trust runs cannot manage workspace runtime services unless the boundary grants runtime.manage",
+    });
+  });
+
+  it("rejects runtime service mutations when only the run policy is low-trust without runtime.manage", async () => {
+    const companyId = await seedCompany();
+    const { projectId, projectWorkspaceId } = await seedProjectWorkspace(companyId);
+    const ceoAgentId = await seedAgent(companyId, { role: "ceo", name: "CEO" });
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Run-scoped low-trust workspace",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: ceoAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: ceoAgentId,
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        executionPolicy: {
+          authorizationPolicy: {
+            trustBoundary: {
+              mode: LOW_TRUST_REVIEW_PRESET,
+              companyId,
+              projectIds: [projectId],
+            },
+          },
+        },
+      },
+    });
+
+    await expect(assertCanManageProjectWorkspaceRuntimeServices(db, {
+      actor: {
+        type: "agent",
+        agentId: ceoAgentId,
+        companyId,
+        runId,
         source: "agent_key",
       },
     } as any, {

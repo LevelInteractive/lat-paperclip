@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import type { Request } from "express";
@@ -15,6 +15,20 @@ const WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES: string[] = [
   "in_review",
   "blocked",
 ];
+
+function readObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readRunIssueId(context: Record<string, unknown> | null) {
+  const directIssueId = context?.issueId;
+  if (typeof directIssueId === "string" && directIssueId.length > 0) return directIssueId;
+  const paperclipIssue = readObject(context?.paperclipIssue);
+  const nestedIssueId = paperclipIssue?.id;
+  return typeof nestedIssueId === "string" && nestedIssueId.length > 0 ? nestedIssueId : null;
+}
 
 async function listReportingSubtreeAgentIds(db: Db, companyId: string, actorAgentId: string) {
   const companyAgents = await db
@@ -78,12 +92,32 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
     throw forbidden("Agent key cannot access another company");
   }
 
+  const actorRun = req.actor.runId
+    ? await db
+        .select({
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, req.actor.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, actorAgent.id),
+        ))
+        .then((rows) => rows[0] ?? null)
+    : null;
+  const runContext = readObject(actorRun?.contextSnapshot);
+  const runExecutionPolicy = readObject(runContext?.executionPolicy);
+
   assertLowTrustCanManageRuntimeForActor({
     companyId: input.companyId,
     actorAgent,
+    runExecutionPolicy,
   });
 
-  const runScopedIssue = req.actor.runId
+  const runIssueId = readRunIssueId(runContext);
+  const runScopedIssue = runIssueId
     ? await db
         .select({
           id: issues.id,
@@ -92,19 +126,11 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
           executionPolicy: issues.executionPolicy,
           projectExecutionWorkspacePolicy: projects.executionWorkspacePolicy,
         })
-        .from(heartbeatRuns)
-        .innerJoin(
-          issues,
-          and(
-            eq(issues.companyId, heartbeatRuns.companyId),
-            eq(issues.id, sql<string>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->>'id')::uuid`),
-          ),
-        )
+        .from(issues)
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, issues.companyId)))
         .where(and(
-          eq(heartbeatRuns.id, req.actor.runId),
-          eq(heartbeatRuns.companyId, input.companyId),
-          eq(heartbeatRuns.agentId, actorAgent.id),
+          eq(issues.id, runIssueId),
+          eq(issues.companyId, input.companyId),
         ))
         .then((rows) => rows[0] ?? null)
     : null;
@@ -114,6 +140,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
       actorAgent,
       issue: runScopedIssue,
       projectExecutionWorkspacePolicy: runScopedIssue.projectExecutionWorkspacePolicy,
+      runExecutionPolicy,
     });
   }
 
@@ -153,6 +180,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
       actorAgent,
       issue: linkedScopeIssue,
       projectExecutionWorkspacePolicy: linkedScopeIssue.projectExecutionWorkspacePolicy,
+      runExecutionPolicy,
     });
   }
 
@@ -185,6 +213,7 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
       actorAgent,
       issue: linkedIssue,
       projectExecutionWorkspacePolicy: linkedIssue.projectExecutionWorkspacePolicy,
+      runExecutionPolicy,
     });
     return;
   }
@@ -199,6 +228,7 @@ function assertLowTrustCanManageRuntimeForActor(input: {
     companyId: string;
     permissions: unknown;
   };
+  runExecutionPolicy?: unknown;
 }) {
   const resolution = resolveCoreTrustPreset({
     companyId: input.companyId,
@@ -206,6 +236,12 @@ function assertLowTrustCanManageRuntimeForActor(input: {
       companyId: input.actorAgent.companyId,
       permissions: input.actorAgent.permissions,
     },
+    run: input.runExecutionPolicy
+      ? {
+          companyId: input.companyId,
+          executionPolicy: input.runExecutionPolicy,
+        }
+      : null,
   });
   if (resolution.kind === "denied") {
     throw forbidden(`Low-trust runtime service access denied: ${resolution.detail}`);
@@ -228,6 +264,7 @@ function assertLowTrustCanManageRuntimeForIssue(input: {
     executionPolicy: unknown;
   };
   projectExecutionWorkspacePolicy: unknown;
+  runExecutionPolicy?: unknown;
 }) {
   const resolution = resolveCoreTrustPreset({
     companyId: input.issue.companyId,
@@ -245,6 +282,12 @@ function assertLowTrustCanManageRuntimeForIssue(input: {
       companyId: input.issue.companyId,
       executionPolicy: input.issue.executionPolicy,
     },
+    run: input.runExecutionPolicy
+      ? {
+          companyId: input.issue.companyId,
+          executionPolicy: input.runExecutionPolicy,
+        }
+      : null,
   });
   if (resolution.kind === "denied") {
     throw forbidden(`Low-trust runtime service access denied: ${resolution.detail}`);

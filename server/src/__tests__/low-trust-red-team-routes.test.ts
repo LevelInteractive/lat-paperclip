@@ -588,9 +588,46 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(lowTrustRes.body).not.toHaveProperty("access");
     expectNoCanary(lowTrustRes.body, fixture.canaries.agentConfig);
 
-    const standardRes = await request(createApp(db, agentActor(fixture, fixture.agents.standard.id))).get("/api/agents/me");
+    const standardActor = agentActor(fixture, fixture.agents.standard.id);
+    const standardRes = await request(createApp(db, { ...standardActor, runId: null })).get("/api/agents/me");
     expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
     expect(JSON.stringify(standardRes.body)).toContain(fixture.canaries.agentConfig);
+
+    const issueScopedLowTrustRes = await request(createApp(db, standardActor)).get("/api/agents/me");
+    expect(issueScopedLowTrustRes.status, JSON.stringify(issueScopedLowTrustRes.body)).toBe(200);
+    expect(issueScopedLowTrustRes.body).toMatchObject({
+      id: fixture.agents.standard.id,
+      companyId: fixture.company.id,
+      trustPreset: LOW_TRUST_REVIEW_PRESET,
+    });
+    expect(issueScopedLowTrustRes.body).not.toHaveProperty("adapterConfig");
+    expect(issueScopedLowTrustRes.body).not.toHaveProperty("runtimeConfig");
+    expectNoCanary(issueScopedLowTrustRes.body, fixture.canaries.agentConfig);
+
+    await db.update(issues).set({ executionPolicy: null }).where(eq(issues.id, fixture.issues.assignedReview.id));
+
+    await db.update(projects).set({
+      executionWorkspacePolicy: {
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: fixture.company.id,
+            projectIds: [fixture.projects.allowed.id],
+          },
+        },
+      },
+    }).where(eq(projects.id, fixture.projects.allowed.id));
+
+    const projectScopedLowTrustRes = await request(createApp(db, agentActor(fixture, fixture.agents.standard.id))).get("/api/agents/me");
+    expect(projectScopedLowTrustRes.status, JSON.stringify(projectScopedLowTrustRes.body)).toBe(200);
+    expect(projectScopedLowTrustRes.body).toMatchObject({
+      id: fixture.agents.standard.id,
+      companyId: fixture.company.id,
+      trustPreset: LOW_TRUST_REVIEW_PRESET,
+    });
+    expect(projectScopedLowTrustRes.body).not.toHaveProperty("adapterConfig");
+    expect(projectScopedLowTrustRes.body).not.toHaveProperty("runtimeConfig");
+    expectNoCanary(projectScopedLowTrustRes.body, fixture.canaries.agentConfig);
   });
 
   it("denies out-of-bound and control-plane attempts without leaking canaries or creating durable side effects", async () => {

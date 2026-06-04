@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -116,6 +116,20 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   if (!Number.isFinite(parsed)) return fallback;
   if (parsed <= 0) return fallback;
   return Math.min(max, Math.trunc(parsed));
+}
+
+function readObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readRunIssueId(context: Record<string, unknown> | null) {
+  const directIssueId = context?.issueId;
+  if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
+  const paperclipIssue = readObject(context?.paperclipIssue);
+  const nestedIssueId = paperclipIssue?.id;
+  return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
 }
 
 export function agentRoutes(
@@ -577,18 +591,38 @@ export function agentRoutes(
           .where(and(eq(heartbeatRuns.id, req.actor.runId), eq(heartbeatRuns.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
-    const runContext = run?.agentId === agent.id && run.contextSnapshot && typeof run.contextSnapshot === "object"
-      ? run.contextSnapshot as Record<string, unknown>
-      : null;
-    const runExecutionPolicy = runContext?.executionPolicy && typeof runContext.executionPolicy === "object"
-      ? runContext.executionPolicy as Record<string, unknown>
+    const runContext = run?.agentId === agent.id ? readObject(run.contextSnapshot) : null;
+    const runExecutionPolicy = readObject(runContext?.executionPolicy);
+    const runIssueId = readRunIssueId(runContext);
+    const runScopedIssue = runIssueId
+      ? await db
+          .select({
+            companyId: issuesTable.companyId,
+            projectId: issuesTable.projectId,
+            executionPolicy: issuesTable.executionPolicy,
+            projectExecutionWorkspacePolicy: projectsTable.executionWorkspacePolicy,
+          })
+          .from(issuesTable)
+          .leftJoin(projectsTable, and(eq(projectsTable.id, issuesTable.projectId), eq(projectsTable.companyId, issuesTable.companyId)))
+          .where(and(eq(issuesTable.id, runIssueId), eq(issuesTable.companyId, agent.companyId)))
+          .then((rows) => rows[0] ?? null)
       : null;
 
     return resolveCoreTrustPreset({
       companyId: agent.companyId,
       agent,
-      project: null,
-      issue: null,
+      project: runScopedIssue?.projectId
+        ? {
+            companyId: runScopedIssue.companyId,
+            executionWorkspacePolicy: runScopedIssue.projectExecutionWorkspacePolicy,
+          }
+        : null,
+      issue: runScopedIssue
+        ? {
+            companyId: runScopedIssue.companyId,
+            executionPolicy: runScopedIssue.executionPolicy,
+          }
+        : null,
       run: runExecutionPolicy ? { companyId: agent.companyId, executionPolicy: runExecutionPolicy } : null,
     });
   }
