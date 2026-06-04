@@ -1,17 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import express from "express";
 import request from "supertest";
+import { WebSocketServer } from "ws";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
+  agentRuntimeState,
   agents,
   approvals,
   companies,
+  companySkills,
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -22,7 +27,7 @@ import {
   issueWorkProducts,
   projects,
 } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,6 +35,8 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -44,6 +51,15 @@ if (!embeddedPostgresSupport.supported) {
 
 type Db = ReturnType<typeof createDb>;
 type Fixture = Awaited<ReturnType<typeof seedLowTrustFixture>>;
+
+async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 10_000, intervalMs = 50) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Timed out waiting for condition");
+}
 
 function expectNoCanary(value: unknown, ...markers: string[]) {
   const serialized = JSON.stringify(value);
@@ -84,6 +100,118 @@ function createApp(db: Db, actor: Express.Request["actor"]) {
   return app;
 }
 
+async function createControlledGatewayServer() {
+  const server = createServer();
+  const wss = new WebSocketServer({ server });
+  const agentPayloads: Array<Record<string, unknown>> = [];
+  let firstWaitRelease: (() => void) | null = null;
+  let firstWaitGate = new Promise<void>((resolve) => {
+    firstWaitRelease = resolve;
+  });
+  let waitCount = 0;
+
+  wss.on("connection", (socket) => {
+    socket.send(
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: "nonce-123" },
+      }),
+    );
+
+    socket.on("message", async (raw) => {
+      const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw);
+      const frame = JSON.parse(text) as {
+        type: string;
+        id: string;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+
+      if (frame.type !== "req") return;
+
+      if (frame.method === "connect") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              type: "hello-ok",
+              protocol: 3,
+              server: { version: "test", connId: "conn-1" },
+              features: { methods: ["connect", "agent", "agent.wait"], events: ["agent"] },
+              snapshot: { version: 1, ts: Date.now() },
+              policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent") {
+        agentPayloads.push((frame.params ?? {}) as Record<string, unknown>);
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId: typeof frame.params?.idempotencyKey === "string"
+                ? frame.params.idempotencyKey
+                : `run-${agentPayloads.length}`,
+              status: "accepted",
+              acceptedAt: Date.now(),
+            },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "agent.wait") {
+        waitCount += 1;
+        if (waitCount === 1) await firstWaitGate;
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: {
+              runId: frame.params?.runId,
+              status: "ok",
+              startedAt: 1,
+              endedAt: 2,
+            },
+          }),
+        );
+      }
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to resolve test server address");
+  }
+
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    getAgentPayloads: () => agentPayloads,
+    releaseFirstWait: () => {
+      firstWaitRelease?.();
+      firstWaitRelease = null;
+      firstWaitGate = Promise.resolve();
+    },
+    close: async () => {
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 async function snapshot(db: Db) {
   const [
     issueRows,
@@ -120,6 +248,40 @@ async function snapshot(db: Db) {
     runs: runRows,
     activity: activityRows,
   };
+}
+
+async function createQuarantinedContinuationSummary(db: Db, fixture: Fixture, issueId: string) {
+  const sourceTrust = {
+    preset: LOW_TRUST_REVIEW_PRESET,
+    disposition: "quarantined" as const,
+    sourceIssueId: fixture.issues.assignedReview.id,
+    sourceRunId: fixture.runs.lowTrust.id,
+    sourceAgentId: fixture.agents.lowTrust.id,
+  };
+  const [document] = await db.insert(documents).values({
+    companyId: fixture.company.id,
+    title: "Continuation Summary",
+    latestBody: `Continuation must not leak ${fixture.canaries.raw}`,
+    createdByAgentId: fixture.agents.lowTrust.id,
+    updatedByAgentId: fixture.agents.lowTrust.id,
+    sourceTrust,
+  }).returning();
+  const [revision] = await db.insert(documentRevisions).values({
+    companyId: fixture.company.id,
+    documentId: document!.id,
+    revisionNumber: 1,
+    title: "Continuation Summary",
+    body: `Continuation must not leak ${fixture.canaries.raw}`,
+    createdByAgentId: fixture.agents.lowTrust.id,
+  }).returning();
+  await db.update(documents).set({ latestRevisionId: revision!.id }).where(eq(documents.id, document!.id));
+  await db.insert(issueDocuments).values({
+    companyId: fixture.company.id,
+    issueId,
+    documentId: document!.id,
+    key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  });
+  return document!;
 }
 
 async function seedLowTrustFixture(db: Db) {
@@ -349,11 +511,14 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
-    await db.delete(heartbeatRuns);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(projects);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -514,6 +679,148 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     }
   });
 
+  it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const lowTrustApp = createApp(db, agentActor(fixture));
+    const standardApp = createApp(db, agentActor(fixture, fixture.agents.standard.id));
+    const gateway = await createControlledGatewayServer();
+    const heartbeat = heartbeatService(db);
+
+    try {
+      const comment = await request(lowTrustApp)
+        .post(`/api/issues/${fixture.issues.assignedReview.id}/comments`)
+        .send({
+          body: `malicious result ${fixture.canaries.raw}`,
+        });
+      expect(comment.status, JSON.stringify(comment.body)).toBe(201);
+      await db.update(issueComments).set({
+        metadata: { canary: fixture.canaries.raw },
+        presentation: { markdown: fixture.canaries.raw },
+      }).where(eq(issueComments.id, comment.body.id));
+
+      await createQuarantinedContinuationSummary(db, fixture, fixture.issues.reviewRoot.id);
+
+      const lowTrustContext = await request(lowTrustApp)
+        .get(`/api/issues/${fixture.issues.assignedReview.id}/heartbeat-context`)
+        .query({ wakeCommentId: comment.body.id });
+      expect(lowTrustContext.status, JSON.stringify(lowTrustContext.body)).toBe(200);
+      expect(JSON.stringify(lowTrustContext.body.wakeComment)).toContain(fixture.canaries.raw);
+
+      const higherTrustContext = await request(standardApp)
+        .get(`/api/issues/${fixture.issues.reviewRoot.id}/heartbeat-context`);
+      expect(higherTrustContext.status, JSON.stringify(higherTrustContext.body)).toBe(200);
+      expect(higherTrustContext.body.continuationSummary).toMatchObject({
+        body: LOW_TRUST_QUARANTINED_BODY,
+        sourceTrust: {
+          preset: LOW_TRUST_REVIEW_PRESET,
+          disposition: "quarantined",
+          sourceIssueId: fixture.issues.assignedReview.id,
+          sourceRunId: fixture.runs.lowTrust.id,
+          sourceAgentId: fixture.agents.lowTrust.id,
+        },
+      });
+      expectNoCanary(higherTrustContext.body, fixture.canaries.raw);
+
+      await db.update(agents).set({
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+      }).where(eq(agents.id, fixture.agents.standard.id));
+
+      const run = await heartbeat.wakeup(fixture.agents.standard.id, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId: fixture.issues.reviewRoot.id,
+          commentId: comment.body.id,
+        },
+        contextSnapshot: {
+          issueId: fixture.issues.reviewRoot.id,
+          taskId: fixture.issues.reviewRoot.id,
+          wakeReason: "issue_commented",
+          livenessContinuationAttempt: 1,
+          livenessContinuationMaxAttempts: 2,
+          livenessContinuationSourceRunId: fixture.runs.lowTrust.id,
+          livenessContinuationState: "quarantined_low_trust_handoff",
+          livenessContinuationReason: "Low-trust review output requires sanitized follow-up.",
+          livenessContinuationInstruction: "Continue from the sanitized quarantine stub only.",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: null,
+      });
+
+      expect(run).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
+      const payload = gateway.getAgentPayloads()[0] ?? {};
+      expect(payload.paperclip).toMatchObject({
+        wake: {
+          reason: "issue_commented",
+          issue: {
+            id: fixture.issues.reviewRoot.id,
+            title: fixture.issues.reviewRoot.title,
+          },
+          latestCommentId: comment.body.id,
+          commentIds: [comment.body.id],
+          comments: [
+            {
+              id: comment.body.id,
+              issueId: fixture.issues.assignedReview.id,
+              body: LOW_TRUST_QUARANTINED_BODY,
+              presentation: null,
+              metadata: null,
+              sourceTrust: {
+                preset: LOW_TRUST_REVIEW_PRESET,
+                disposition: "quarantined",
+                sourceIssueId: fixture.issues.assignedReview.id,
+                sourceRunId: fixture.runs.lowTrust.id,
+                sourceAgentId: fixture.agents.lowTrust.id,
+              },
+            },
+          ],
+          continuationSummary: {
+            body: LOW_TRUST_QUARANTINED_BODY,
+            sourceTrust: {
+              preset: LOW_TRUST_REVIEW_PRESET,
+              disposition: "quarantined",
+            },
+          },
+          livenessContinuation: {
+            attempt: 1,
+            maxAttempts: 2,
+            sourceRunId: fixture.runs.lowTrust.id,
+            state: "quarantined_low_trust_handoff",
+            reason: "Low-trust review output requires sanitized follow-up.",
+            instruction: "Continue from the sanitized quarantine stub only.",
+          },
+        },
+      });
+      expect(String(payload.message ?? "")).toContain("## Paperclip Wake Payload");
+      expectNoCanary(payload, fixture.canaries.raw);
+      gateway.releaseFirstWait();
+      await waitFor(async () => {
+        const status = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run!.id))
+          .then((rows) => rows[0]?.status ?? null);
+        return status === "succeeded" || status === "failed" || status === "cancelled";
+      }, 30_000);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("keeps board positive controls for issue-linked approvals and sanitized promotion", async () => {
     const fixture = await seedLowTrustFixture(db);
     const app = createApp(db, boardActor(fixture));
@@ -552,12 +859,26 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(promotion.body.sourceTrust).toMatchObject({
       preset: LOW_TRUST_REVIEW_PRESET,
       disposition: "promoted",
+      sourceIssueId: fixture.issues.assignedReview.id,
       promotedFrom: {
         artifactKind: "work_product",
         artifactId: rawProduct!.id,
         issueId: fixture.issues.assignedReview.id,
       },
+      promotedByActorType: "user",
+      promotedByActorId: "board-user",
     });
+    expect(promotion.body).toMatchObject({
+      externalId: rawProduct!.id,
+      metadata: {
+        promotion: {
+          sourceArtifactKind: "work_product",
+          sourceArtifactId: rawProduct!.id,
+        },
+      },
+      createdByRunId: null,
+    });
+    expect(typeof promotion.body.sourceTrust.promotedAt).toBe("string");
     expectNoCanary(promotion.body, fixture.canaries.raw);
   });
 });
