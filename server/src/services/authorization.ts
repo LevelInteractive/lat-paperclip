@@ -183,6 +183,7 @@ type AssignmentPolicyEffect =
 
 type AgentHierarchyRow = { id: string; reportsTo: string | null };
 type LowTrustBoundaryWithCompany = LowTrustBoundary & { companyId: string };
+const LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH = 12;
 type AgentAuthorizationRow = {
   id: string;
   companyId: string;
@@ -618,7 +619,8 @@ export function authorizationService(db: Db) {
 
   async function issueIdIsDescendantOf(issueId: string, rootIssueId: string, companyId: string) {
     let cursor: string | null = issueId;
-    for (let depth = 0; cursor && depth < 50; depth += 1) {
+    // Keep list filtering bounded. Deep task trees outside this limit are treated as outside the boundary.
+    for (let depth = 0; cursor && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH; depth += 1) {
       if (cursor === rootIssueId) return true;
       const row: { id: string; companyId: string; parentId: string | null } | null = await db
         .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })

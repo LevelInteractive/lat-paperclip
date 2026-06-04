@@ -983,7 +983,7 @@ export function issueRoutes(
   async function actorIsLowTrustReview(
     req: Request,
     companyId: string,
-    issue?: { companyId: string; executionPolicy?: unknown } | null,
+    issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
   ) {
     if (req.actor.type !== "agent" || !req.actor.agentId) return false;
     const [agent, run] = await Promise.all([
@@ -1007,10 +1007,13 @@ export function issueRoutes(
     const runExecutionPolicy = runContext?.executionPolicy && typeof runContext.executionPolicy === "object"
       ? runContext.executionPolicy as Record<string, unknown>
       : null;
+    const project = issue?.projectId
+      ? await projectsSvc.getById(issue.projectId)
+      : null;
     const resolution = resolveCoreTrustPreset({
       companyId,
       agent,
-      project: null,
+      project: project?.companyId === companyId ? project : null,
       issue: issue
         ? {
             companyId: issue.companyId,
@@ -1019,7 +1022,7 @@ export function issueRoutes(
         : null,
       run: runExecutionPolicy ? { companyId, executionPolicy: runExecutionPolicy } : null,
     });
-    return resolution.kind !== "standard";
+    return resolution.kind === "low_trust_review";
   }
 
   async function assertLowTrustControlPlaneDenied(
@@ -1049,10 +1052,34 @@ export function issueRoutes(
   }): Promise<SourceTrustMetadata | null> {
     if (input.artifactKind === "issue") {
       const row = await db
-        .select({ sourceTrust: issueRows.sourceTrust })
+        .select({
+          id: issueRows.id,
+          companyId: issueRows.companyId,
+          parentId: issueRows.parentId,
+          sourceTrust: issueRows.sourceTrust,
+        })
         .from(issueRows)
-        .where(and(eq(issueRows.id, input.artifactId), eq(issueRows.id, input.issueId)))
+        .where(eq(issueRows.id, input.artifactId))
         .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      if (row.id !== input.issueId) {
+        let cursor = row.parentId;
+        let isDescendant = false;
+        for (let depth = 0; cursor && depth < 20; depth += 1) {
+          if (cursor === input.issueId) {
+            isDescendant = true;
+            break;
+          }
+          const parent = await db
+            .select({ id: issueRows.id, companyId: issueRows.companyId, parentId: issueRows.parentId })
+            .from(issueRows)
+            .where(eq(issueRows.id, cursor))
+            .then((rows) => rows[0] ?? null);
+          if (!parent || parent.companyId !== row.companyId) return null;
+          cursor = parent.parentId;
+        }
+        if (!isDescendant) return null;
+      }
       return row?.sourceTrust ?? null;
     }
 

@@ -7822,19 +7822,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       persistedExecutionWorkspace,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
-    assertLowTrustWorkspaceIsolation({
-      resolution: trustPreset,
-      isolatedWorkspacesEnabled,
-      effectiveExecutionWorkspaceMode,
-      selectedEnvironmentDriver: selectedEnvironment.driver,
-      issue: issueRef
-        ? {
-            companyId: agent.companyId,
-            id: issueRef.id,
-            projectId: issueRef.projectId,
-          }
-        : null,
-    });
     let activeEnvironmentLease = {
       environment: acquiredEnvironment.environment,
       lease: acquiredEnvironment.lease,

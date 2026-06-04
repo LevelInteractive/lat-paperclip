@@ -138,6 +138,7 @@ export async function resolveActorSourceTrustForIssue(input: {
   ]);
 
   if (input.actor.runId && (!run || run.agentId !== input.actor.agentId)) {
+    // Fail closed: an unknown or mismatched run cannot prove higher trust, so tag the write as quarantined.
     return buildLowTrustSourceTrust({
       issueId: input.issue.id,
       runId: input.actor.runId,

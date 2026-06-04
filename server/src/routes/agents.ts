@@ -1799,7 +1799,11 @@ export function agentRoutes(
       return;
     }
     const trustPreset = await resolveAgentSelfTrustPreset(req, agent);
-    if (trustPreset.kind !== "standard") {
+    if (trustPreset.kind === "denied") {
+      res.status(403).json({ error: trustPreset.detail });
+      return;
+    }
+    if (trustPreset.kind === "low_trust_review") {
       res.json(buildLowTrustSelfView(agent));
       return;
     }
