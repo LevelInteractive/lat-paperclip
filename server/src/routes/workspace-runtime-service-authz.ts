@@ -6,7 +6,7 @@ import { forbidden } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { isLowTrustRuntimeManagementAllowed } from "../services/low-trust-runtime-containment.js";
-import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
+import { resolveCoreTrustPreset, type TrustPresetResolution } from "../services/trust-preset-resolver.js";
 
 const WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES: string[] = [
   "backlog",
@@ -110,11 +110,15 @@ async function assertAgentCanManageRuntimeServicesForWorkspace(
   const runContext = readObject(actorRun?.contextSnapshot);
   const runExecutionPolicy = readObject(runContext?.executionPolicy);
 
-  assertLowTrustCanManageRuntimeForActor({
+  const actorRuntimeTrust = assertLowTrustCanManageRuntimeForActor({
     companyId: input.companyId,
     actorAgent,
     runExecutionPolicy,
   });
+
+  if (actorAgent.role === "ceo" && actorRuntimeTrust.kind === "standard") {
+    return;
+  }
 
   const runIssueId = readRunIssueId(runContext);
   const runScopedIssue = runIssueId
@@ -229,7 +233,7 @@ function assertLowTrustCanManageRuntimeForActor(input: {
     permissions: unknown;
   };
   runExecutionPolicy?: unknown;
-}) {
+}): TrustPresetResolution {
   const resolution = resolveCoreTrustPreset({
     companyId: input.companyId,
     agent: {
@@ -246,8 +250,8 @@ function assertLowTrustCanManageRuntimeForActor(input: {
   if (resolution.kind === "denied") {
     throw forbidden(`Low-trust runtime service access denied: ${resolution.detail}`);
   }
-  if (resolution.kind !== "low_trust_review") return;
-  if (isLowTrustRuntimeManagementAllowed(resolution)) return;
+  if (resolution.kind !== "low_trust_review") return resolution;
+  if (isLowTrustRuntimeManagementAllowed(resolution)) return resolution;
   throw forbidden("Low-trust runs cannot manage workspace runtime services unless the boundary grants runtime.manage");
 }
 

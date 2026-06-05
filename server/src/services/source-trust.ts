@@ -5,6 +5,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   type SourceTrustMetadata,
 } from "@paperclipai/shared";
+import { forbidden } from "../errors.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 
 export const LOW_TRUST_QUARANTINED_BODY =
@@ -165,6 +166,9 @@ export async function resolveActorSourceTrustForIssue(input: {
       : null,
   });
 
+  if (resolution.kind === "denied") {
+    throw forbidden(resolution.detail);
+  }
   if (resolution.kind !== "low_trust_review") return null;
   return buildLowTrustSourceTrust({
     issueId: input.issue.id,

@@ -885,6 +885,36 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       },
     }).returning();
 
+    const [otherCompany] = await db.insert(companies).values({
+      name: "Foreign low-trust source",
+      issuePrefix: `FGN${randomUUID().slice(0, 4).toUpperCase()}`,
+    }).returning();
+    const [foreignIssue] = await db.insert(issues).values({
+      companyId: otherCompany!.id,
+      parentId: fixture.issues.assignedReview.id,
+      title: "Foreign quarantined issue",
+      status: "done",
+      priority: "medium",
+      sourceTrust: {
+        preset: LOW_TRUST_REVIEW_PRESET,
+        disposition: "quarantined",
+        sourceIssueId: fixture.issues.assignedReview.id,
+        sourceRunId: fixture.runs.lowTrust.id,
+        sourceAgentId: fixture.agents.lowTrust.id,
+      },
+    }).returning();
+
+    const rejectedPromotion = await request(app)
+      .post(`/api/issues/${fixture.issues.assignedReview.id}/low-trust/promotions`)
+      .send({
+        sourceArtifactKind: "issue",
+        sourceArtifactId: foreignIssue!.id,
+        title: "Rejected foreign issue",
+        summary: "Should not promote across company boundaries.",
+      });
+    expect(rejectedPromotion.status, JSON.stringify(rejectedPromotion.body)).toBe(404);
+    expect(rejectedPromotion.body.error).toBe("Low-trust source artifact not found");
+
     const promotion = await request(app)
       .post(`/api/issues/${fixture.issues.assignedReview.id}/low-trust/promotions`)
       .send({

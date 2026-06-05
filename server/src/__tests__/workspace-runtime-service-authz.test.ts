@@ -200,7 +200,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
     });
   });
 
-  it("rejects CEO runtime service mutations for low-trust workspace issues without runtime.manage", async () => {
+  it("allows standard CEO runtime service mutations for low-trust workspace issues", async () => {
     const companyId = await seedCompany();
     const { projectId, projectWorkspaceId } = await seedProjectWorkspace(companyId);
     const ceoAgentId = await seedAgent(companyId, { role: "ceo", name: "CEO" });
@@ -235,10 +235,7 @@ describeEmbeddedPostgres("workspace runtime service authz helper", () => {
     } as any, {
       companyId,
       projectWorkspaceId,
-    })).rejects.toMatchObject({
-      status: 403,
-      message: "Low-trust runs cannot manage workspace runtime services unless the boundary grants runtime.manage",
-    });
+    })).resolves.toBeUndefined();
   });
 
   it("rejects runtime service mutations when only the run policy is low-trust without runtime.manage", async () => {

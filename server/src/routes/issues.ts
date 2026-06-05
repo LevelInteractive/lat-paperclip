@@ -130,7 +130,7 @@ import {
   resolveActorSourceTrustForIssue,
   sanitizeQuarantinedCommentForHigherTrust,
 } from "../services/source-trust.js";
-import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
+import { resolveCoreTrustPreset, type TrustPresetResolution } from "../services/trust-preset-resolver.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -979,15 +979,18 @@ export function issueRoutes(
     return resolveActorSourceTrustForIssue({ db, issue, actor });
   }
 
-  async function actorIsLowTrustReview(
-    req: Request,
+  async function resolveAgentTrustForIssue(
+    input: {
+      agentId: string | null | undefined;
+      runId?: string | null;
+    },
     companyId: string,
     issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
-  ) {
-    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+  ): Promise<TrustPresetResolution | null> {
+    if (!input.agentId) return null;
     const [agent, run] = await Promise.all([
-      agentsSvc.getById(req.actor.agentId),
-      req.actor.runId
+      agentsSvc.getById(input.agentId),
+      input.runId
         ? db
             .select({
               companyId: heartbeatRuns.companyId,
@@ -995,11 +998,11 @@ export function issueRoutes(
               contextSnapshot: heartbeatRuns.contextSnapshot,
             })
             .from(heartbeatRuns)
-            .where(and(eq(heartbeatRuns.id, req.actor.runId), eq(heartbeatRuns.companyId, companyId)))
+            .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, companyId)))
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
     ]);
-    if (!agent || agent.companyId !== companyId) return false;
+    if (!agent || agent.companyId !== companyId) return null;
     const runContext = run?.agentId === agent.id && run.contextSnapshot && typeof run.contextSnapshot === "object"
       ? run.contextSnapshot as Record<string, unknown>
       : null;
@@ -1009,7 +1012,7 @@ export function issueRoutes(
     const project = issue?.projectId
       ? await projectsSvc.getById(issue.projectId)
       : null;
-    const resolution = resolveCoreTrustPreset({
+    return resolveCoreTrustPreset({
       companyId,
       agent,
       project: project?.companyId === companyId ? project : null,
@@ -1021,7 +1024,19 @@ export function issueRoutes(
         : null,
       run: runExecutionPolicy ? { companyId, executionPolicy: runExecutionPolicy } : null,
     });
-    return resolution.kind === "low_trust_review";
+  }
+
+  async function actorIsLowTrustReview(
+    req: Request,
+    companyId: string,
+    issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
+  ) {
+    if (req.actor.type !== "agent") return false;
+    const resolution = await resolveAgentTrustForIssue({
+      agentId: req.actor.agentId,
+      runId: req.actor.runId,
+    }, companyId, issue);
+    return resolution?.kind === "low_trust_review";
   }
 
   async function assertLowTrustControlPlaneDenied(
@@ -1041,6 +1056,14 @@ export function issueRoutes(
   ) {
     // Board users are trusted reviewers and intentionally receive raw quarantined output for promotion decisions.
     if (actor.actorType !== "agent") return false;
+    const resolution = await resolveAgentTrustForIssue({
+      agentId: actor.agentId,
+      runId: actor.runId,
+    }, issue.companyId, issue);
+    if (resolution?.kind === "denied") {
+      throw forbidden(resolution.detail);
+    }
+    if (resolution?.kind === "low_trust_review") return false;
     const sourceTrust = await sourceTrustForActorWrite(issue, actor);
     return !sourceTrust;
   }
@@ -1062,6 +1085,12 @@ export function issueRoutes(
         .where(eq(issueRows.id, input.artifactId))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
+      const sourceIssue = await db
+        .select({ companyId: issueRows.companyId })
+        .from(issueRows)
+        .where(eq(issueRows.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue || row.companyId !== sourceIssue.companyId) return null;
       if (row.id !== input.issueId) {
         let cursor = row.parentId;
         let isDescendant = false;

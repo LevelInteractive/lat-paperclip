@@ -122,7 +122,7 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
       .then((rows) => rows[0]!);
   }
 
-  async function createAgent(companyId: string) {
+  async function createAgent(companyId: string, permissions: Record<string, unknown> = {}) {
     return db
       .insert(agents)
       .values({
@@ -132,7 +132,7 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
         adapterType: "process",
         adapterConfig: {},
         runtimeConfig: {},
-        permissions: {},
+        permissions,
       })
       .returning()
       .then((rows) => rows[0]!);
@@ -250,6 +250,49 @@ describeEmbeddedPostgres("resolveActorSourceTrustForIssue", () => {
       sourceIssueId: issue!.id,
       sourceRunId: run!.id,
       sourceAgentId: actorAgent.id,
+    });
+  });
+
+  it("surfaces denied trust policy resolution instead of treating it as higher trust", async () => {
+    const company = await createCompany();
+    const agent = await createAgent(company.id, {
+      trustPreset: LOW_TRUST_REVIEW_PRESET,
+      authorizationPolicy: {
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: randomUUID(),
+          projectIds: [randomUUID()],
+        },
+      },
+    });
+    const [issue] = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        title: "Denied trust policy issue",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: agent.id,
+      })
+      .returning();
+
+    await expect(resolveActorSourceTrustForIssue({
+      db,
+      issue: {
+        id: issue!.id,
+        companyId: company.id,
+        projectId: null,
+        executionPolicy: null,
+      },
+      actor: {
+        actorType: "agent",
+        actorId: agent.id,
+        agentId: agent.id,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 403,
+      message: "Low-trust boundary refers to a different company.",
     });
   });
 });
