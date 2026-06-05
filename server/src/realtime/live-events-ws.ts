@@ -8,6 +8,7 @@ import { agentApiKeys, companyMemberships, instanceUserRoles } from "@paperclipa
 import type { DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
+import { readCloudTenantHeaders } from "../middleware/auth.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 
 interface WsSocket {
@@ -116,7 +117,36 @@ async function authorizeUpgrade(
       };
     }
 
-    if (opts.deploymentMode !== "authenticated" || !opts.resolveSessionFromHeaders) {
+    if (opts.deploymentMode !== "authenticated") {
+      return null;
+    }
+
+    // Forward-auth (Traefik) injects the trusted x-paperclip-cloud-* headers on
+    // the upgrade GET too. Honor them before falling back to a better-auth
+    // session cookie, which forward-auth users never have. Mirrors the HTTP
+    // actor middleware's resolveCloudTenantActor path.
+    let cloud: ReturnType<typeof readCloudTenantHeaders> = null;
+    try {
+      cloud = readCloudTenantHeaders((name) => {
+        const value = req.headers[name.toLowerCase()];
+        return Array.isArray(value) ? value[0] : value;
+      });
+    } catch (err) {
+      logger.warn({ err }, "invalid trusted Cloud tenant headers on websocket upgrade");
+      return null;
+    }
+    if (cloud) {
+      // Mirror the better-auth branch below: an instance admin may subscribe to
+      // any company; everyone else only to their own derived company.
+      if (!cloud.isInstanceAdmin && cloud.companyId !== companyId) return null;
+      return {
+        companyId,
+        actorType: "board",
+        actorId: cloud.userId,
+      };
+    }
+
+    if (!opts.resolveSessionFromHeaders) {
       return null;
     }
 

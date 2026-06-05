@@ -133,4 +133,74 @@ describe("actorMiddleware authenticated session profile", () => {
       emailVerified: true,
     });
   });
+
+  it("grants least-privilege member access (no instance_admin) for non-admin stack roles", async () => {
+    process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
+    const inserts: Array<{ values: Record<string, unknown> }> = [];
+    const deletes: unknown[] = [];
+    const db = {
+      insert: vi.fn(() => {
+        const chain = {
+          values(values: Record<string, unknown>) {
+            inserts.push({ values });
+            return chain;
+          },
+          onConflictDoUpdate() {
+            return chain;
+          },
+          onConflictDoNothing() {
+            return chain;
+          },
+          returning() {
+            return Promise.resolve([{
+              companyId: inserts.at(-1)?.values.companyId,
+              membershipRole: inserts.at(-1)?.values.membershipRole,
+              status: inserts.at(-1)?.values.status,
+            }]);
+          },
+        };
+        return chain;
+      }),
+      delete: vi.fn(() => ({
+        where(condition: unknown) {
+          deletes.push(condition);
+          return Promise.resolve(undefined);
+        },
+      })),
+      select: vi.fn(),
+    } as any;
+    const app = express();
+    app.use(
+      actorMiddleware(db, {
+        deploymentMode: "authenticated",
+        resolveSession: async () => null,
+      }),
+    );
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-cloud-tenant-token", "tenant-token")
+      .set("x-paperclip-cloud-user-id", "global-user-2")
+      .set("x-paperclip-cloud-user-email", "member@example.com")
+      .set("x-paperclip-cloud-user-name", "Stack Member")
+      .set("x-paperclip-cloud-stack-id", "stack-alpha")
+      .set("x-paperclip-cloud-stack-role", "member");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      userId: "global-user-2",
+      source: "cloud_tenant",
+      isInstanceAdmin: false,
+      memberships: [expect.objectContaining({ membershipRole: "member", status: "active" })],
+    });
+    // authUsers + companies + companyMemberships — instance_admin is NOT inserted.
+    expect(inserts).toHaveLength(3);
+    expect(inserts.some((i) => i.values.role === "instance_admin")).toBe(false);
+    // Instead, any stale instance_admin grant is reconciled away.
+    expect(deletes).toHaveLength(1);
+  });
 });

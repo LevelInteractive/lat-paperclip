@@ -38,7 +38,18 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
-        const cloudTenantActor = await resolveCloudTenantActor(db, req);
+        let cloudTenantActor: Express.Request["actor"] | null = null;
+        try {
+          cloudTenantActor = await resolveCloudTenantActor(db, req);
+        } catch (err) {
+          // A valid token with a missing/invalid identity header throws. Don't
+          // let it become an uncaught async rejection (hang/500 for the request);
+          // log and fall through to the better-auth session path.
+          logger.warn(
+            { err, method: req.method, url: req.originalUrl },
+            "Failed to resolve Cloud tenant actor from trusted headers",
+          );
+        }
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
@@ -199,20 +210,66 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   };
 }
 
-async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+/**
+ * Trusted Cloud-tenant headers, parsed and token-verified. The header-reading
+ * core is shared between the HTTP actor middleware (`resolveCloudTenantActor`)
+ * and the websocket upgrade handler (`authorizeUpgrade` in live-events-ws.ts)
+ * so both honor the same forward-auth contract.
+ */
+export interface CloudTenantHeaders {
+  userId: string;
+  userEmail: string;
+  userName: string;
+  stackId: string;
+  stackRole: "owner" | "admin" | "member" | "support";
+  paperclipCompanyId: string | undefined;
+  /** Deterministic company id derived from the stack id. */
+  companyId: string;
+  /** stack `owner`/`admin` map to instance_admin; everyone else is a plain member. */
+  isInstanceAdmin: boolean;
+}
+
+/**
+ * Validate the trusted tenant token and parse the `x-paperclip-cloud-*` headers.
+ * Returns null when the request is not a cloud-tenant request (token absent or
+ * mismatched). Throws when the token is valid but a required identity header is
+ * missing — a misconfigured forward-auth proxy should fail loudly, not silently
+ * downgrade to anonymous.
+ */
+export function readCloudTenantHeaders(
+  getHeader: (name: string) => string | undefined,
+): CloudTenantHeaders | null {
   const expectedToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
   if (!expectedToken) return null;
 
-  const token = req.header("x-paperclip-cloud-tenant-token")?.trim();
+  const token = getHeader("x-paperclip-cloud-tenant-token")?.trim();
   if (!token || !constantTimeStringEqual(token, expectedToken)) return null;
 
-  const userId = requiredCloudHeader(req, "x-paperclip-cloud-user-id");
-  const userEmail = requiredCloudHeader(req, "x-paperclip-cloud-user-email").toLowerCase();
-  const stackId = requiredCloudHeader(req, "x-paperclip-cloud-stack-id");
-  const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
-  const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
-  const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
-  const companyId = cloudTenantCompanyId(stackId);
+  const userId = requiredCloudHeader(getHeader, "x-paperclip-cloud-user-id");
+  const userEmail = requiredCloudHeader(getHeader, "x-paperclip-cloud-user-email").toLowerCase();
+  const stackId = requiredCloudHeader(getHeader, "x-paperclip-cloud-stack-id");
+  const stackRole = stackMembershipRole(getHeader("x-paperclip-cloud-stack-role"));
+  const userName = getHeader("x-paperclip-cloud-user-name")?.trim() || userEmail;
+  const paperclipCompanyId = getHeader("x-paperclip-cloud-paperclip-company-id")?.trim();
+
+  return {
+    userId,
+    userEmail,
+    userName,
+    stackId,
+    stackRole,
+    paperclipCompanyId: paperclipCompanyId || undefined,
+    companyId: cloudTenantCompanyId(stackId),
+    isInstanceAdmin: stackRole === "owner" || stackRole === "admin",
+  };
+}
+
+async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
+  const headers = readCloudTenantHeaders((name) => req.header(name) ?? undefined);
+  if (!headers) return null;
+
+  const { userId, userEmail, userName, stackId, stackRole, paperclipCompanyId, companyId, isInstanceAdmin } =
+    headers;
   const companyName = paperclipCompanyId || `${stackId} Paperclip`;
   const now = new Date();
 
@@ -237,16 +294,24 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       },
     });
 
-  await db
-    .insert(instanceUserRoles)
-    .values({
-      userId,
-      role: "instance_admin",
-      updatedAt: now,
-    })
-    .onConflictDoNothing({
-      target: [instanceUserRoles.userId, instanceUserRoles.role],
-    });
+  // Least-privilege: only stack owners/admins become instance admins. Reconcile
+  // every request so a downgrade (admin → member) actually revokes the role.
+  if (isInstanceAdmin) {
+    await db
+      .insert(instanceUserRoles)
+      .values({
+        userId,
+        role: "instance_admin",
+        updatedAt: now,
+      })
+      .onConflictDoNothing({
+        target: [instanceUserRoles.userId, instanceUserRoles.role],
+      });
+  } else {
+    await db
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
+  }
 
   await db
     .insert(companies)
@@ -303,13 +368,13 @@ async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Re
       membershipRole: membership.membershipRole,
       status: membership.status,
     }],
-    isInstanceAdmin: true,
+    isInstanceAdmin,
     source: "cloud_tenant",
   };
 }
 
-function requiredCloudHeader(req: Request, name: string): string {
-  const value = req.header(name)?.trim();
+function requiredCloudHeader(getHeader: (name: string) => string | undefined, name: string): string {
+  const value = getHeader(name)?.trim();
   if (!value) {
     throw new Error(`Missing trusted Cloud tenant header ${name}`);
   }
